@@ -95,7 +95,7 @@ These are non-negotiable. Each one exists because skipping it produces broken ou
 |---|---|---|
 | **Python 3.9+** | Figma mode | `python --version` — used to run the extractor script |
 | **Figma Personal Access Token** | Figma mode only | figma.com → Settings → Security → Personal access tokens. Store in `.env` as `FIGMA_TOKEN=...` (or export `FIGMA_TOKEN`). Never paste it in chat. |
-| **Node.js + the target project deps** | Verify loop (optional) | Only needed if you run the app + Playwright screenshot compare |
+| **Node.js + Playwright** | Visual verify loop (Step 7.2) | Only if you screenshot-compare rendered screens. One-time setup: `npm install playwright` then `npx playwright install chromium` (downloads a browser). Skip if you rely on the static fidelity pass. |
 
 Image mode needs **nothing** — no token, no network. The image just has to be a file in
 the workspace (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`).
@@ -159,28 +159,40 @@ Record the chosen **CASE (1/2/3)** and the **target directory** before continuin
 
 ## Step 4A — Extract the Figma design (INPUT = Figma)
 
-### 4A.1 Run the extractor
+### 4A.1 (Large files only) List screens first
+
+If the file/subtree is large or you don't yet know its node ids, enumerate screens
+shallowly first — this is fast and never hits the API "too large" limit:
 
 ```bash
-python scripts/fetch_figma.py --url "<figma-url>" --out ./.design-cache
+python scripts/fetch_figma.py --url "<figma-url>" --list --out ./.design-cache
 ```
 
+This writes `figma_screens.md` (a screen/node-id inventory). Then extract the specific
+screens you want with `--ids` (comma-separated — all are extracted):
+
+```bash
+python scripts/fetch_figma.py --url "<figma-url>" --ids "1:23,1:45" --out ./.design-cache
+```
+
+### 4A.2 Run the extractor (single command — includes reference images)
+
+```bash
+python scripts/fetch_figma.py --url "<figma-url>" --download-images --scale 2 --out ./.design-cache
+```
+
+- One run does everything: it parses the spec **and** saves one reference PNG per screen.
+  Do NOT run the script twice — `--download-images` on the first run avoids a second
+  network round-trip.
 - Token resolution order: `--token` arg → `FIGMA_TOKEN` env → `FIGMA_API_KEY` env → `.env` file in CWD.
-- The script writes three files into `./.design-cache/`:
+- The script writes into `./.design-cache/`:
   - `figma_raw.json` — the raw API response (can be large; do NOT read it directly)
-  - `figma_spec.json` — the compact machine spec (screens, colour/shadow/type tokens, per-screen text + layout)
+  - `figma_spec.json` — the compact machine spec (screens, colour/shadow/spacing/type tokens, per-screen text, exact auto-layout + layout hints)
   - `figma_spec.md` — a human-readable summary (READ THIS)
-- To re-parse an already-downloaded file without hitting the network:
+  - `reference/*.png` — one 2× reference image per screen for the verify loop
+- To re-parse an already-downloaded file without hitting the network (note: this cannot
+  fetch new images):
   `python scripts/fetch_figma.py --from-json ./.design-cache/figma_raw.json --out ./.design-cache`
-
-### 4A.2 Reference images for the verify loop (optional but recommended)
-
-```bash
-python scripts/fetch_figma.py --url "<figma-url>" --download-images --out ./.design-cache
-```
-
-This saves one PNG per top-level screen to `./.design-cache/reference/` for side-by-side
-comparison later.
 
 ### 4A.3 Read the compact spec, not the raw JSON
 
@@ -207,8 +219,9 @@ Now go to **Step 4C (Completeness Gate)**.
    - **Spacing/size**: estimate padding, gaps, card sizes, corner radius in px.
    - **Components**: buttons, inputs, tables, tabs, radios, badges, avatars, icons.
    - **State**: is any tab/radio shown selected? If unclear, default to none selected.
-3. Because image tokens are estimates, the **verify loop (Step 7) is mandatory** to correct
-   colour/spacing drift.
+3. Because image tokens are estimates, the **verify loop (Step 7) is mandatory whenever a
+   render target exists** to correct colour/spacing drift. If nothing can render, do the
+   static fidelity pass instead and flag that estimates were not visually confirmed.
 
 Now go to **Step 4C (Completeness Gate)**.
 
@@ -308,8 +321,14 @@ Repeat until every screen passes; do not declare done early.
 - CASE 1: run `npx tsc --noEmit` against the generated files if TypeScript is available;
   otherwise at minimum re-read each file for obvious type/import errors.
 
-### 7.2 Visual compare (strongly recommended, required for image mode)
-If the components can be rendered (existing repo dev server, or a quick preview):
+### 7.2 Visual compare (required whenever a render target exists)
+A render target = an existing repo dev server, or a quick preview you can spin up. When one
+exists this step is mandatory (and it is the primary safety net for image mode, whose tokens
+are estimates). If nothing can render (e.g. CASE 1 empty folder with no preview), skip to the
+static fidelity pass below instead.
+
+One-time Playwright setup if not already installed: `npm install playwright` then
+`npx playwright install chromium`.
 1. Screenshot each rendered screen (see `scripts/screenshot.js` — Playwright helper).
 2. Put it next to the reference (Figma PNG from 4A.2, or the source image).
 3. Compare: colours, spacing, layout direction, text, component presence, selected state.

@@ -348,6 +348,14 @@ def walk_collect(node: dict, acc: dict, depth: int = 0) -> None:
     for sh in effects_to_css(node.get("effects", [])):
         acc["shadows"].add(sh)
 
+    gap = node.get("itemSpacing")
+    if isinstance(gap, (int, float)) and gap:
+        acc["spacings"].add(round(gap, 1))
+    for pk in ("paddingTop", "paddingRight", "paddingBottom", "paddingLeft"):
+        pv = node.get(pk)
+        if isinstance(pv, (int, float)) and pv:
+            acc["spacings"].add(round(pv, 1))
+
     if ntype == "TEXT":
         chars = (node.get("characters") or "").strip()
         if chars:
@@ -390,6 +398,36 @@ def child_layout_hint(node: dict) -> str:
     return "row" if x_spread >= y_spread else "column"
 
 
+def autolayout_of(node: dict) -> dict | None:
+    """Extract exact auto-layout spacing/padding/alignment from a Figma frame.
+
+    Figma exposes these on any frame with auto-layout enabled; they are the exact
+    values needed to reproduce spacing faithfully instead of guessing.
+    """
+    mode = node.get("layoutMode")
+    if not mode or mode == "NONE":
+        return None
+    info: dict = {"direction": "row" if mode == "HORIZONTAL" else "column"}
+    gap = node.get("itemSpacing")
+    if isinstance(gap, (int, float)):
+        info["gap"] = round(gap, 1)
+    pads = {
+        "top": node.get("paddingTop", 0) or 0,
+        "right": node.get("paddingRight", 0) or 0,
+        "bottom": node.get("paddingBottom", 0) or 0,
+        "left": node.get("paddingLeft", 0) or 0,
+    }
+    if any(pads.values()):
+        info["padding"] = {k: round(v, 1) for k, v in pads.items()}
+    prim = node.get("primaryAxisAlignItems")
+    if prim:
+        info["justify"] = prim
+    counter = node.get("counterAxisAlignItems")
+    if counter:
+        info["align"] = counter
+    return info
+
+
 def extract_screen(node: dict) -> dict:
     acc = {
         "texts": [],
@@ -397,6 +435,7 @@ def extract_screen(node: dict) -> dict:
         "shadows": set(),
         "fonts": set(),
         "radii": set(),
+        "spacings": set(),
         "components": set(),
     }
     walk_collect(node, acc)
@@ -413,10 +452,12 @@ def extract_screen(node: dict) -> dict:
         "type": node.get("type"),
         "bbox": bbox_of(node),
         "layoutHint": child_layout_hint(node),
+        "layout": autolayout_of(node),
         "texts": texts,
         "colors": sorted(acc["colors"]),
         "shadows": sorted(acc["shadows"]),
         "radii": sorted(str(r) for r in acc["radii"]),
+        "spacings": sorted(acc["spacings"]),
         "components": sorted(acc["components"]),
         "fonts": [json.loads(f) for f in sorted(acc["fonts"])],
     }
@@ -428,10 +469,12 @@ def build_spec(root: dict, file_key: str) -> dict:
 
     palette: set = set()
     shadows: set = set()
+    spacings: set = set()
     fonts: set = set()
     for s in screen_specs:
         palette.update(s["colors"])
         shadows.update(s["shadows"])
+        spacings.update(s["spacings"])
         for f in s["fonts"]:
             fonts.add(json.dumps(f, sort_keys=True))
 
@@ -440,6 +483,7 @@ def build_spec(root: dict, file_key: str) -> dict:
         "screenCount": len(screen_specs),
         "globalPalette": sorted(palette),
         "globalShadows": sorted(shadows),
+        "globalSpacings": sorted(spacings),
         "globalFonts": [json.loads(f) for f in sorted(fonts)],
         "screens": screen_specs,
     }
@@ -493,6 +537,11 @@ def spec_to_markdown(spec: dict) -> str:
             lines.append(f"- `{s}`")
         lines.append("")
 
+    if spec.get("globalSpacings"):
+        lines.append("## Global spacing scale (px)")
+        lines.append("- " + ", ".join(f"`{s}`" for s in spec["globalSpacings"]))
+        lines.append("")
+
     if spec["globalFonts"]:
         lines.append("## Typography")
         for f in spec["globalFonts"]:
@@ -508,6 +557,23 @@ def spec_to_markdown(spec: dict) -> str:
         size = f"{bbox.get('width')}x{bbox.get('height')}" if bbox else "unknown"
         lines.append(f"### {i}. {s.get('name')}  (`{s.get('id')}`)")
         lines.append(f"- type: {s.get('type')} | size: {size} | layout: {s.get('layoutHint')}")
+        lay = s.get("layout")
+        if lay:
+            parts = [f"direction={lay.get('direction')}"]
+            if "gap" in lay:
+                parts.append(f"gap={lay['gap']}px")
+            if "padding" in lay:
+                p = lay["padding"]
+                parts.append(
+                    f"padding={p['top']}/{p['right']}/{p['bottom']}/{p['left']}px"
+                )
+            if "justify" in lay:
+                parts.append(f"justify={lay['justify']}")
+            if "align" in lay:
+                parts.append(f"align={lay['align']}")
+            lines.append(f"- auto-layout: {', '.join(parts)}")
+        if s.get("spacings"):
+            lines.append(f"- spacings: {', '.join('`'+str(x)+'px`' for x in s['spacings'])}")
         if s["colors"]:
             lines.append(f"- colors: {', '.join('`'+c+'`' for c in s['colors'][:24])}")
         if s["shadows"]:
@@ -536,7 +602,8 @@ def main() -> None:
     p.add_argument("--url", help="Figma file/design URL")
     p.add_argument("--file-key", help="Figma file key (alternative to --url)")
     p.add_argument("--node-id", help="Node id (e.g. 1:2). Optional with --file-key.")
-    p.add_argument("--ids", help="Comma-separated node ids to extract (overrides --node-id).")
+    p.add_argument("--ids", help="Comma-separated node ids to extract (all are extracted; "
+                   "overrides --node-id).")
     p.add_argument("--token", help="Figma PAT (else FIGMA_TOKEN / FIGMA_API_KEY / .env)")
     p.add_argument("--out", default="./.design-cache", help="Output directory")
     p.add_argument("--list", action="store_true",
@@ -579,8 +646,10 @@ def main() -> None:
             die("Provide --url, or --file-key (with optional --node-id), or --from-json.")
             return
 
+        node_ids: list[str] | None = None
         if args.ids:
-            node_id = args.ids.split(",")[0].strip().replace("-", ":")
+            node_ids = [x.strip().replace("-", ":") for x in args.ids.split(",") if x.strip()]
+            node_id = node_ids[0] if node_ids else None
 
         token = resolve_token(args.token)
 
@@ -613,7 +682,12 @@ def main() -> None:
             return
 
         print(f"Fetching Figma document (file={file_key}, node={node_id or 'ALL'}) ...")
-        root = fetch_document(file_key, node_id, token)
+        if node_ids and len(node_ids) > 1:
+            print(f"  extracting {len(node_ids)} nodes: {', '.join(node_ids)}")
+            docs = [fetch_node_full(file_key, nid, token) for nid in node_ids]
+            root = {"type": "CANVAS", "name": file_key, "children": docs}
+        else:
+            root = fetch_document(file_key, node_id, token)
         (out_dir / "figma_raw.json").write_text(
             json.dumps(root, ensure_ascii=False), encoding="utf-8"
         )

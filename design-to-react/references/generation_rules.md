@@ -58,8 +58,9 @@ off-design.
   image. Never default to vertical stacking.
 - **Selected/default state** matches the design. If nothing is shown selected, initial state
   is `null` — do NOT auto-select the first tab/radio/item.
-- **Spacing/size**: use extracted px values; in image mode, estimate consistently and refine
-  in the verify loop.
+- **Spacing/size**: in Figma mode use the exact values from the spec's `layout` (gap,
+  padding, justify/align) and `spacings` scale — do NOT guess. In image mode, estimate
+  consistently and refine in the verify loop.
 - **Icons/logos**: use inline SVG or a placeholder with `// TODO(design):`. Text logos →
   styled text in the brand colour. Never fabricate a brand asset as vector paths.
 
