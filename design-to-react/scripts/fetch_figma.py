@@ -141,6 +141,9 @@ def http_get_json(url: str, token: str, timeout: int = 120, retries: int = 5) ->
                 retry_after = e.headers.get("Retry-After") if e.headers else None
                 wait = int(retry_after) if (retry_after and retry_after.isdigit()) else None
                 if attempt < retries:
+                    delay = wait if wait is not None else min(2 ** attempt, 30)
+                    print(f"  Figma API 429 rate-limited -- waiting {delay}s, then retry "
+                          f"{attempt + 1}/{retries} ...", file=sys.stderr, flush=True)
                     _sleep_backoff(attempt, wait)
                     continue
                 die("Figma API 429 Too Many Requests -- rate limit persists. "
@@ -149,6 +152,10 @@ def http_get_json(url: str, token: str, timeout: int = 120, retries: int = 5) ->
         except (urllib.error.URLError, TimeoutError) as e:
             last_err = e
             if attempt < retries:
+                delay = min(2 ** attempt, 30)
+                reason = getattr(e, "reason", e)
+                print(f"  Network/timeout reaching Figma API ({reason}) -- retry "
+                      f"{attempt + 1}/{retries} in {delay}s ...", file=sys.stderr, flush=True)
                 _sleep_backoff(attempt)
                 continue
             reason = getattr(e, "reason", e)
@@ -598,6 +605,14 @@ def die(msg: str) -> None:
 
 
 def main() -> None:
+    # Ensure progress lines appear immediately when stdout is not a TTY
+    # (e.g. captured by Copilot / a pipe), otherwise Python block-buffers and the
+    # run looks frozen during network waits.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+        except Exception:
+            pass
     p = argparse.ArgumentParser(description="Standalone Figma design extractor (stdlib only).")
     p.add_argument("--url", help="Figma file/design URL")
     p.add_argument("--file-key", help="Figma file key (alternative to --url)")
@@ -657,7 +672,9 @@ def main() -> None:
         if args.list:
             if not node_id:
                 die("--list requires a node (URL with node-id, or --node-id/--ids).")
-            print(f"Enumerating screens under {node_id} (depth={args.list_depth}) ...")
+            print(f"Enumerating screens under {node_id} (depth={args.list_depth}) ...",
+                  flush=True)
+            print("  contacting Figma API (large pages can take 30-120s) ...", flush=True)
             shallow = fetch_shallow(file_key, node_id, token, depth=args.list_depth)
             if shallow is None:
                 die(f"Could not fetch node {node_id}.")
@@ -681,7 +698,8 @@ def main() -> None:
                 print(f"  ... and {len(screens) - 60} more (see figma_screens.md)")
             return
 
-        print(f"Fetching Figma document (file={file_key}, node={node_id or 'ALL'}) ...")
+        print(f"Fetching Figma document (file={file_key}, node={node_id or 'ALL'}) ...",
+               flush=True)
         if node_ids and len(node_ids) > 1:
             print(f"  extracting {len(node_ids)} nodes: {', '.join(node_ids)}")
             docs = [fetch_node_full(file_key, nid, token) for nid in node_ids]
