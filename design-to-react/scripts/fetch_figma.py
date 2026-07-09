@@ -629,6 +629,9 @@ def main() -> None:
     p.add_argument("--download-images", action="store_true",
                    help="Download one reference PNG per screen")
     p.add_argument("--scale", type=int, default=1, help="Reference PNG scale (1-4)")
+    p.add_argument("--refresh", action="store_true",
+                   help="Ignore any cached figma_raw.json in --out and re-fetch from the API. "
+                        "By default a matching cache is reused to avoid rate limits.")
     p.add_argument("--from-json", help="Parse an existing raw JSON file instead of fetching")
     args = p.parse_args()
 
@@ -698,18 +701,37 @@ def main() -> None:
                 print(f"  ... and {len(screens) - 60} more (see figma_screens.md)")
             return
 
-        print(f"Fetching Figma document (file={file_key}, node={node_id or 'ALL'}) ...",
-               flush=True)
-        if node_ids and len(node_ids) > 1:
-            print(f"  extracting {len(node_ids)} nodes: {', '.join(node_ids)}")
-            docs = [fetch_node_full(file_key, nid, token) for nid in node_ids]
-            root = {"type": "CANVAS", "name": file_key, "children": docs}
+        raw_path = out_dir / "figma_raw.json"
+        meta_path = out_dir / "figma_raw.meta.json"
+        cache_key = {"fileKey": file_key,
+                     "nodes": node_ids or ([node_id] if node_id else [])}
+
+        cached_meta = None
+        if meta_path.exists():
+            try:
+                cached_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                cached_meta = None
+
+        if raw_path.exists() and not args.refresh and cached_meta == cache_key:
+            print(f"  reusing cached {raw_path.name} (same file/node) -- no API call. "
+                  "Pass --refresh to force a re-fetch.", flush=True)
+            root = json.loads(raw_path.read_text(encoding="utf-8"))
         else:
-            root = fetch_document(file_key, node_id, token)
-        (out_dir / "figma_raw.json").write_text(
-            json.dumps(root, ensure_ascii=False), encoding="utf-8"
-        )
-        print(f"  raw -> {out_dir / 'figma_raw.json'}")
+            print(f"Fetching Figma document (file={file_key}, node={node_id or 'ALL'}) ...",
+                  flush=True)
+            if raw_path.exists() and not args.refresh and cached_meta is not None:
+                print("  cached figma_raw.json is for a different file/node -- re-fetching.",
+                      flush=True)
+            if node_ids and len(node_ids) > 1:
+                print(f"  extracting {len(node_ids)} nodes: {', '.join(node_ids)}")
+                docs = [fetch_node_full(file_key, nid, token) for nid in node_ids]
+                root = {"type": "CANVAS", "name": file_key, "children": docs}
+            else:
+                root = fetch_document(file_key, node_id, token)
+            raw_path.write_text(json.dumps(root, ensure_ascii=False), encoding="utf-8")
+            meta_path.write_text(json.dumps(cache_key), encoding="utf-8")
+            print(f"  raw -> {raw_path}")
 
     print("Parsing design ...")
     spec = build_spec(root, file_key)

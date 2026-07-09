@@ -193,6 +193,9 @@ python scripts/fetch_figma.py --url "<figma-url>" --download-images --scale 2 --
 - To re-parse an already-downloaded file without hitting the network (note: this cannot
   fetch new images):
   `python scripts/fetch_figma.py --from-json ./.design-cache/figma_raw.json --out ./.design-cache`
+- **Automatic caching:** if `figma_raw.json` already exists in `--out` for the **same file +
+  node**, the script reuses it and makes **no API call** (avoids rate limits). Pass
+  `--refresh` to force a fresh fetch when the design changed.
 
 ### 4A.3 Read the compact spec, not the raw JSON
 
